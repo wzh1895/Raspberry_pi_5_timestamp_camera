@@ -21,23 +21,38 @@ Gst.init(None)
 class CameraApp(Gtk.Window):
     def __init__(self):
         super().__init__(title="Camera Controller")
-        self.set_default_size(800, 600)
+        self.set_default_size(1000, 600)
 
-        # Main container: top = video preview, bottom = controls
-        self.vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        self.add(self.vbox)
+        # Main container: horizontal box splitting window into two parts.
+        main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self.add(main_box)
 
-        # Video area
+        # Video preview area on the left.
         self.video_box = Gtk.Box()
-        self.vbox.pack_start(self.video_box, True, True, 0)
+        main_box.pack_start(self.video_box, True, True, 0)
 
-        # Controls (Photo, Record)
-        button_box = Gtk.Box(spacing=10, orientation=Gtk.Orientation.HORIZONTAL)
-        self.vbox.pack_start(button_box, False, False, 0)
-        self.photo_button  = Gtk.Button(label="Photo")
-        self.record_button = Gtk.Button(label="Record")
+        # Controls area on the right with no extra spacing.
+        control_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        control_box.set_vexpand(True)
+        main_box.pack_start(control_box, False, False, 0)
+
+        # Vertical box for buttons to take equal space, no spacing.
+        button_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        button_box.set_vexpand(True)
+        control_box.pack_start(button_box, True, True, 0)
+
+        # Create buttons with symbols.
+        self.photo_button  = Gtk.Button(label="📷")
+        self.record_button = Gtk.Button(label="⏺")
+        # Set each button to expand and fill half of the available height.
+        self.photo_button.set_hexpand(True)
+        self.photo_button.set_vexpand(True)
+        self.record_button.set_hexpand(True)
+        self.record_button.set_vexpand(True)
         button_box.pack_start(self.photo_button, True, True, 0)
         button_box.pack_start(self.record_button, True, True, 0)
+
+
         self.photo_button.connect("clicked", self.on_photo_clicked)
         self.record_button.connect("clicked", self.on_record_clicked)
 
@@ -66,19 +81,14 @@ class CameraApp(Gtk.Window):
             return "openh264enc"
         else:
             logger.error("No H264 encoder found. Install gstreamer1.0-plugins-ugly or similar.")
-            return "x264enc"  # Will likely fail if x264enc is truly missing.
+            return "x264enc"
 
     def build_preview_pipeline(self):
         """
         Preview pipeline branches into:
-          1) Crosshair + final preview sink
-          2) Crosshair + bottom-right date/time for photo capture
+          1) Crosshair + final preview sink with clock overlay.
+          2) Crosshair + bottom-right date/time for photo capture.
         """
-        # Large crosshair overlay in center (white on black outline),
-        # plus a clockoverlay in the photo branch for date/time.
-        # For crosshair, we use textoverlay.
-        # For date/time on photo, we use clockoverlay in that branch.
-
         pipeline_desc = f"""
             libcamerasrc name=cam ! videoconvert ! video/x-raw,format=NV12,width=1920,height=1080 ! tee name=t
             t. ! queue ! videoscale ! video/x-raw,width=640,height=360 !
@@ -116,12 +126,11 @@ class CameraApp(Gtk.Window):
     def build_record_pipeline(self, video_filename):
         """
         Record pipeline branches into:
-          1) Crosshair => show in preview sink
-          2) Crosshair => real date/time => elapsed time => splitmuxsink
-          3) Crosshair => real date/time => photo appsink
+          1) Crosshair => show in preview sink with overlays.
+          2) Crosshair => real date/time and elapsed time => splitmuxsink.
+          3) Crosshair => real date/time for photo capture.
         """
         encoder = self.choose_encoder()
-
         pipeline_desc = f"""
             libcamerasrc name=cam ! videoconvert ! video/x-raw,format=NV12,width=1920,height=1080 ! tee name=t
             t. ! queue !
@@ -178,7 +187,6 @@ class CameraApp(Gtk.Window):
         """
         pipeline_desc = " ".join(pipeline_desc.split())
         logger.debug("Record pipeline:\n%s", pipeline_desc)
-
         pipeline = Gst.parse_launch(pipeline_desc)
         splitmux = pipeline.get_by_name("splitmux")
         splitmux.set_property("location", video_filename)
@@ -186,7 +194,7 @@ class CameraApp(Gtk.Window):
         return pipeline
 
     def embed_video_widget(self):
-        """Re-parent the gtksink widget into our GTK layout."""
+        """Embed the video sink widget into our GTK layout."""
         if not self.pipeline or not self.embed_video:
             return False
         gtksink = self.pipeline.get_by_name("video_sink")
@@ -208,7 +216,7 @@ class CameraApp(Gtk.Window):
         return False
 
     def on_bus_message(self, bus, message):
-        """ Handle bus messages (mainly for error-logging). """
+        """Handle bus messages for logging and error handling."""
         t = message.type
         logger.debug("Bus message: %s", t)
         if t == Gst.MessageType.ERROR:
@@ -219,7 +227,7 @@ class CameraApp(Gtk.Window):
             logger.debug("Other bus message: %s", t)
 
     def fallback_stop(self):
-        """If we never see EOS from the muxer, forcibly stop the pipeline."""
+        """If EOS not seen, forcibly stop the pipeline."""
         if self.mode == "record":
             logger.warning("Forcing pipeline stop; restarting preview.")
             self.stop_pipeline()
@@ -232,7 +240,7 @@ class CameraApp(Gtk.Window):
             self.pipeline.set_state(Gst.State.NULL)
             self.pipeline = None
             self.mode = None
-            self.record_button.set_label("Record")
+            self.record_button.set_label("⏺")
             for child in self.video_box.get_children():
                 self.video_box.remove(child)
 
@@ -259,7 +267,7 @@ class CameraApp(Gtk.Window):
             self.pipeline = self.build_record_pipeline(video_filename)
             self.pipeline.set_state(Gst.State.PLAYING)
             self.mode = "record"
-            self.record_button.set_label("Stop")
+            self.record_button.set_label("⏹")
             bus = self.pipeline.get_bus()
             bus.add_signal_watch()
             bus.connect("message", self.on_bus_message)
@@ -280,7 +288,7 @@ class CameraApp(Gtk.Window):
     def on_photo_clicked(self, widget):
         """
         Capture a photo from the 'photo_sink' branch.
-        The branch has a clockoverlay in bottom-right.
+        The branch has a clockoverlay in the bottom-right.
         """
         if not self.pipeline:
             logger.warning("No active pipeline => cannot capture photo.")
@@ -308,10 +316,8 @@ class CameraApp(Gtk.Window):
             logger.error("No sample pulled for photo; possibly no new frames available.")
 
 def main():
-    # Ensure directories exist
     os.makedirs(os.path.expanduser("~/Pictures"), exist_ok=True)
     os.makedirs(os.path.expanduser("~/Videos"), exist_ok=True)
-
     app = CameraApp()
     app.connect("destroy", Gtk.main_quit)
     app.show_all()
