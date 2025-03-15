@@ -8,7 +8,7 @@ gi.require_version("Gst", "1.0")
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gst, Gtk, GLib
 
-# Set up verbose logging.
+# Configure verbose logging
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -23,15 +23,15 @@ class CameraApp(Gtk.Window):
         super().__init__(title="Camera Controller")
         self.set_default_size(800, 600)
 
-        # Main container: video preview area on top, buttons at bottom.
+        # Main container: top = video preview, bottom = controls
         self.vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         self.add(self.vbox)
 
-        # Video preview area.
+        # Video area
         self.video_box = Gtk.Box()
         self.vbox.pack_start(self.video_box, True, True, 0)
 
-        # Button area (only Photo and Record buttons).
+        # Controls (Photo, Record)
         button_box = Gtk.Box(spacing=10, orientation=Gtk.Orientation.HORIZONTAL)
         self.vbox.pack_start(button_box, False, False, 0)
         self.photo_button  = Gtk.Button(label="Photo")
@@ -42,58 +42,151 @@ class CameraApp(Gtk.Window):
         self.record_button.connect("clicked", self.on_record_clicked)
 
         self.pipeline = None
-        self.mode = None  # Either "preview" or "record"
+        self.mode = None  # "preview" or "record"
 
-        # Use gtksink if available.
-        if Gst.ElementFactory.find("gtksink") is not None:
+        # Use gtksink if available, otherwise fall back.
+        if Gst.ElementFactory.find("gtksink"):
             self.video_sink_element = "gtksink name=video_sink"
             self.embed_video = True
             logger.debug("Using gtksink for video embedding.")
         else:
             self.video_sink_element = "autovideosink"
             self.embed_video = False
-            logger.warning("gtksink not found. Using autovideosink; preview will open in a separate window.")
+            logger.warning("gtksink not found; using autovideosink => floating preview window.")
 
-        # Auto-start preview.
+        # Start the preview automatically.
         GLib.idle_add(self.on_preview_clicked, None)
 
     def choose_encoder(self):
         if Gst.ElementFactory.find("x264enc"):
-            logger.debug("Using x264enc as H264 encoder.")
+            logger.debug("Using x264enc as H.264 encoder.")
             return "x264enc"
         elif Gst.ElementFactory.find("openh264enc"):
-            logger.debug("Using openh264enc as H264 encoder.")
+            logger.debug("Using openh264enc as H.264 encoder.")
             return "openh264enc"
         else:
-            logger.error("No H264 encoder available. Install gstreamer1.0-plugins-ugly or similar.")
-            return "x264enc"  # May trigger a parse error.
+            logger.error("No H264 encoder found. Install gstreamer1.0-plugins-ugly or similar.")
+            return "x264enc"  # Will likely fail if x264enc is truly missing.
 
     def build_preview_pipeline(self):
-        pipeline_desc = (
-            "libcamerasrc name=cam ! videoconvert ! video/x-raw,format=NV12,width=1920,height=1080 ! tee name=t "
-            "t. ! queue ! videoscale ! video/x-raw,width=640,height=360 ! videoconvert ! " + self.video_sink_element + " "
-            "t. ! queue ! videoconvert ! jpegenc ! appsink name=photo_sink max-buffers=1 drop=true"
-        )
-        logger.debug("Building preview pipeline:\n%s", pipeline_desc)
+        """
+        Preview pipeline branches into:
+          1) Crosshair + final preview sink
+          2) Crosshair + bottom-right date/time for photo capture
+        """
+        # Large crosshair overlay in center (white on black outline),
+        # plus a clockoverlay in the photo branch for date/time.
+        # For crosshair, we use textoverlay.
+        # For date/time on photo, we use clockoverlay in that branch.
+
+        pipeline_desc = f"""
+            libcamerasrc name=cam ! videoconvert ! video/x-raw,format=NV12,width=1920,height=1080 ! tee name=t
+            t. ! queue ! videoscale ! video/x-raw,width=640,height=360 !
+                textoverlay name=crosshair_pre1
+                    text="+"
+                    halignment=center
+                    valignment=center
+                    font-desc="Sans,48"
+                    color=0xFFFFFF
+                    draw-outline=true
+                    outline-color=0x000000 !
+                clockoverlay name=preview_clock
+                    halignment=right
+                    valignment=bottom
+                    shaded-background=true
+                    font-desc="Sans,20"
+                    time-format="%Y-%m-%d %H:%M:%S" !
+                videoconvert !
+                {self.video_sink_element}
+            t. ! queue !
+                clockoverlay name=photo_clock
+                    halignment=right
+                    valignment=bottom
+                    shaded-background=true
+                    font-desc="Sans,20"
+                    time-format="%Y-%m-%d %H:%M:%S" !
+                videoconvert !
+                jpegenc !
+                appsink name=photo_sink max-buffers=1 drop=true
+        """
+        pipeline_desc = " ".join(pipeline_desc.split())
+        logger.debug("Preview pipeline:\n%s", pipeline_desc)
         return Gst.parse_launch(pipeline_desc)
 
     def build_record_pipeline(self, video_filename):
+        """
+        Record pipeline branches into:
+          1) Crosshair => show in preview sink
+          2) Crosshair => real date/time => elapsed time => splitmuxsink
+          3) Crosshair => real date/time => photo appsink
+        """
         encoder = self.choose_encoder()
-        # splitmuxsink finalizes the file on EOS.
-        pipeline_desc = (
-            "libcamerasrc name=cam ! videoconvert ! video/x-raw,format=NV12,width=1920,height=1080 ! tee name=t "
-            "t. ! queue ! videoconvert ! " + self.video_sink_element + " "  # Preview branch.
-            "t. ! queue ! videoconvert ! " + encoder + " speed-preset=ultrafast tune=zerolatency ! splitmuxsink name=splitmux "  # Recording branch.
-            "t. ! queue ! videoconvert ! jpegenc ! appsink name=photo_sink max-buffers=1 drop=true"   # Photo branch.
-        )
-        logger.debug("Building record pipeline:\n%s", pipeline_desc)
+
+        pipeline_desc = f"""
+            libcamerasrc name=cam ! videoconvert ! video/x-raw,format=NV12,width=1920,height=1080 ! tee name=t
+            t. ! queue !
+                textoverlay name=crosshair_pre2
+                    text="+"
+                    halignment=center
+                    valignment=center
+                    font-desc="Sans,48"
+                    color=0xFFFFFF
+                    draw-outline=true
+                    outline-color=0x000000 !
+                clockoverlay name=video_preview_clock
+                    halignment=right
+                    valignment=bottom
+                    shaded-background=true
+                    font-desc="Sans,20"
+                    time-format="%Y-%m-%d %H:%M:%S" !
+                timeoverlay name=video_preview_elapsed_time
+                    halignment=left
+                    valignment=bottom
+                    shaded-background=true
+                    font-desc="Sans,20"
+                    time-mode=elapsed-running-time !
+                videoconvert !
+                {self.video_sink_element}
+            t. ! queue !
+                clockoverlay name=video_clock
+                    halignment=right
+                    valignment=bottom
+                    shaded-background=true
+                    font-desc="Sans,20"
+                    time-format="%Y-%m-%d %H:%M:%S" !
+                timeoverlay name=video_elapsed_time
+                    halignment=left
+                    valignment=bottom
+                    shaded-background=true
+                    font-desc="Sans,20"
+                    time-mode=elapsed-running-time !
+                videoconvert ! {encoder} speed-preset=ultrafast tune=zerolatency ! splitmuxsink name=splitmux
+            t. ! queue !
+                clockoverlay name=video_photo_clock
+                    halignment=right
+                    valignment=bottom
+                    shaded-background=true
+                    font-desc="Sans,20"
+                    time-format="%Y-%m-%d %H:%M:%S" !
+                timeoverlay name=video_photo_elapsed_time
+                    halignment=left
+                    valignment=bottom
+                    shaded-background=true
+                    font-desc="Sans,20"
+                    time-mode=elapsed-running-time !
+                videoconvert ! jpegenc ! appsink name=photo_sink max-buffers=1 drop=true
+        """
+        pipeline_desc = " ".join(pipeline_desc.split())
+        logger.debug("Record pipeline:\n%s", pipeline_desc)
+
         pipeline = Gst.parse_launch(pipeline_desc)
         splitmux = pipeline.get_by_name("splitmux")
         splitmux.set_property("location", video_filename)
-        logger.debug("Recording file will be saved to: %s", video_filename)
+        logger.debug("Recording file -> %s", video_filename)
         return pipeline
 
     def embed_video_widget(self):
+        """Re-parent the gtksink widget into our GTK layout."""
         if not self.pipeline or not self.embed_video:
             return False
         gtksink = self.pipeline.get_by_name("video_sink")
@@ -106,7 +199,7 @@ class CameraApp(Gtk.Window):
                     toplevel.hide()
                 parent = video_widget.get_parent()
                 if parent and parent is not self.video_box:
-                    logger.debug("Removing video widget from its old parent.")
+                    logger.debug("Removing video widget from old parent.")
                     parent.remove(video_widget)
                 if not video_widget.get_parent():
                     logger.debug("Embedding video widget into main window.")
@@ -115,31 +208,27 @@ class CameraApp(Gtk.Window):
         return False
 
     def on_bus_message(self, bus, message):
+        """ Handle bus messages (mainly for error-logging). """
         t = message.type
-        logger.debug("Bus message received: %s", t)
+        logger.debug("Bus message: %s", t)
         if t == Gst.MessageType.ERROR:
             err, debug = message.parse_error()
-            logger.error("Bus ERROR: %s, %s", err, debug)
+            logger.error("Bus ERROR: %s - %s", err, debug)
             self.stop_pipeline()
-        # We don't rely on EOS since splitmuxsink may not propagate it.
         else:
             logger.debug("Other bus message: %s", t)
 
-    def restart_preview(self):
-        logger.debug("Restarting preview...")
-        self.stop_pipeline()
-        self.on_preview_clicked(None)
-        return False
-
-    def fallback_handler(self):
+    def fallback_stop(self):
+        """If we never see EOS from the muxer, forcibly stop the pipeline."""
         if self.mode == "record":
-            logger.warning("Fallback: forcing pipeline stop and restarting preview.")
-            self.restart_preview()
+            logger.warning("Forcing pipeline stop; restarting preview.")
+            self.stop_pipeline()
+            GLib.idle_add(self.on_preview_clicked, None)
         return False
 
     def stop_pipeline(self):
         if self.pipeline:
-            logger.debug("Stopping pipeline and setting state to NULL.")
+            logger.debug("Stopping pipeline => NULL state.")
             self.pipeline.set_state(Gst.State.NULL)
             self.pipeline = None
             self.mode = None
@@ -148,7 +237,8 @@ class CameraApp(Gtk.Window):
                 self.video_box.remove(child)
 
     def on_preview_clicked(self, widget):
-        logger.debug("Starting preview pipeline...")
+        """ Start the preview pipeline. """
+        logger.debug("Starting PREVIEW pipeline...")
         self.stop_pipeline()
         self.pipeline = self.build_preview_pipeline()
         self.pipeline.set_state(Gst.State.PLAYING)
@@ -162,7 +252,7 @@ class CameraApp(Gtk.Window):
 
     def on_record_clicked(self, widget):
         if self.mode != "record":
-            logger.debug("Starting recording pipeline...")
+            logger.debug("Starting RECORD pipeline...")
             self.stop_pipeline()
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             video_filename = os.path.expanduser(f"~/Videos/video_{timestamp}.mp4")
@@ -177,44 +267,51 @@ class CameraApp(Gtk.Window):
                 GLib.idle_add(self.embed_video_widget)
             logger.info("Recording started.")
         else:
-            logger.debug("Stopping recording... sending EOS event and waiting for finalization.")
+            logger.debug("Stopping RECORD => sending EOS, waiting 2s, then fallback.")
             eos_event = Gst.Event.new_eos()
             result = self.pipeline.send_event(eos_event)
             if result:
                 logger.info("EOS event sent successfully.")
             else:
                 logger.error("Failed to send EOS event.")
-            # Force a pipeline stop after 5000 ms.
-            GLib.timeout_add(5000, self.fallback_handler)
+            # Wait 2 seconds, then forcibly stop.
+            GLib.timeout_add(2000, self.fallback_stop)
 
     def on_photo_clicked(self, widget):
+        """
+        Capture a photo from the 'photo_sink' branch.
+        The branch has a clockoverlay in bottom-right.
+        """
         if not self.pipeline:
-            logger.warning("No active pipeline; cannot capture photo.")
+            logger.warning("No active pipeline => cannot capture photo.")
             return
         appsink = self.pipeline.get_by_name("photo_sink")
         if not appsink:
-            logger.error("Photo branch not found in pipeline!")
+            logger.error("No 'photo_sink' in pipeline => cannot capture photo.")
             return
-        logger.debug("Capturing photo sample...")
+
+        logger.debug("Attempting to pull a photo sample...")
         sample = appsink.emit("try-pull-sample", 1 * Gst.SECOND)
         if sample:
             buf = sample.get_buffer()
-            result, mapinfo = buf.map(Gst.MapFlags.READ)
-            if result:
+            ok, mapinfo = buf.map(Gst.MapFlags.READ)
+            if ok:
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 photo_filename = os.path.expanduser(f"~/Pictures/photo_{timestamp}.jpg")
                 with open(photo_filename, "wb") as f:
                     f.write(mapinfo.data)
-                logger.info("Photo saved to %s", photo_filename)
                 buf.unmap(mapinfo)
+                logger.info(f"Photo saved to {photo_filename}")
             else:
-                logger.error("Failed to map buffer for reading.")
+                logger.error("Failed mapping buffer for reading.")
         else:
-            logger.error("No photo sample captured.")
+            logger.error("No sample pulled for photo; possibly no new frames available.")
 
 def main():
+    # Ensure directories exist
     os.makedirs(os.path.expanduser("~/Pictures"), exist_ok=True)
     os.makedirs(os.path.expanduser("~/Videos"), exist_ok=True)
+
     app = CameraApp()
     app.connect("destroy", Gtk.main_quit)
     app.show_all()
