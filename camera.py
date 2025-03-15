@@ -298,12 +298,14 @@ class PhotosTab(Gtk.Box):
             filename = model[treeiter][0]
             filepath = os.path.join(os.path.expanduser("~/Pictures"), filename)
             logger.info(f"PhotosTab: Selected {filepath}")
-            # Load image and scale to fit event_box size.
-            pixbuf = GdkPixbuf.Pixbuf.new_from_file(filepath)
-            alloc = self.event_box.get_allocation()
-            scaled = pixbuf.scale_simple(alloc.width, alloc.height, GdkPixbuf.InterpType.BILINEAR)
-            self.image.set_from_pixbuf(scaled)
-            
+            try:
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file(filepath)
+                alloc = self.event_box.get_allocation()
+                scaled = pixbuf.scale_simple(alloc.width, alloc.height, GdkPixbuf.InterpType.BILINEAR)
+                self.image.set_from_pixbuf(scaled)
+            except Exception as e:
+                logger.error(f"PhotosTab: Error scaling image: {e}")
+                    
     def on_image_allocate(self, widget, allocation):
         # When the container is resized, re-load the selected image if any.
         selection = self.treeview.get_selection()
@@ -342,14 +344,11 @@ class VideosTab(Gtk.Box):
         self.video_area.set_hexpand(True)
         self.video_area.set_vexpand(True)
         self.pack_start(self.video_area, True, True, 0)
-        
-        # Video widget using Gtk.DrawingArea.
-        self.drawing_area = Gtk.DrawingArea()
-        self.drawing_area.set_hexpand(True)
-        self.drawing_area.set_vexpand(True)
-        self.video_area.pack_start(self.drawing_area, True, True, 0)
-        
-        # Control bar with play/pause and progress.
+        # Instead of a DrawingArea, use a Box container for video widget.
+        self.video_container = Gtk.Box()
+        self.video_container.set_hexpand(True)
+        self.video_container.set_vexpand(True)
+        self.video_area.pack_start(self.video_container, True, True, 0)
         controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
         self.play_button = Gtk.Button(label="▶")
         self.play_button.connect("clicked", self.on_play_pause)
@@ -402,9 +401,10 @@ class VideosTab(Gtk.Box):
         if video_sink:
             widget = video_sink.props.widget
             if widget:
-                for child in self.drawing_area.get_children():
-                    self.drawing_area.remove(child)
-                self.drawing_area.add(widget)
+                # Remove existing widget from container.
+                for child in self.video_container.get_children():
+                    self.video_container.remove(child)
+                self.video_container.add(widget)
                 widget.show_all()
         return False
 
@@ -456,22 +456,14 @@ class MainWindow(Gtk.Window):
         super().__init__(title="Media Controller")
         self.set_default_size(800, 480)
         self.connect("delete-event", Gtk.main_quit)
-
         notebook = Gtk.Notebook()
         self.add(notebook)
-
-        # Camera tab.
         self.camera_tab = CameraTab()
         notebook.append_page(self.camera_tab, Gtk.Label(label="Camera"))
-
-        # Photos tab.
         self.photos_tab = PhotosTab()
         notebook.append_page(self.photos_tab, Gtk.Label(label="Photos"))
-
-        # Videos tab.
         self.videos_tab = VideosTab()
         notebook.append_page(self.videos_tab, Gtk.Label(label="Videos"))
-        
         notebook.connect("switch-page", self.on_switch_page)
         
     def on_switch_page(self, notebook, page, page_num):
