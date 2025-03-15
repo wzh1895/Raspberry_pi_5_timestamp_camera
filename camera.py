@@ -274,11 +274,13 @@ class PhotosTab(Gtk.Box):
         self.image = Gtk.Image()
         self.image.set_hexpand(True)
         self.image.set_vexpand(True)
-        # Wrap in an EventBox to catch size allocation.
         self.event_box = Gtk.EventBox()
         self.event_box.add(self.image)
         self.event_box.connect("size-allocate", self.on_image_allocate)
         self.pack_start(self.event_box, True, True, 0)
+        
+        # Current selected file path.
+        self.current_filepath = None
         
         # Refresh file list when the tab is mapped.
         self.connect("map", lambda w: self.populate_file_list())
@@ -298,27 +300,31 @@ class PhotosTab(Gtk.Box):
             filename = model[treeiter][0]
             filepath = os.path.join(os.path.expanduser("~/Pictures"), filename)
             logger.info(f"PhotosTab: Selected {filepath}")
-            try:
-                pixbuf = GdkPixbuf.Pixbuf.new_from_file(filepath)
-                alloc = self.event_box.get_allocation()
-                scaled = pixbuf.scale_simple(alloc.width, alloc.height, GdkPixbuf.InterpType.BILINEAR)
-                self.image.set_from_pixbuf(scaled)
-            except Exception as e:
-                logger.error(f"PhotosTab: Error scaling image: {e}")
+            self.current_filepath = filepath
+            self.update_image()
                     
     def on_image_allocate(self, widget, allocation):
-        # When the container is resized, re-load the selected image if any.
-        selection = self.treeview.get_selection()
-        model, treeiter = selection.get_selected()
-        if treeiter:
-            filename = model[treeiter][0]
-            filepath = os.path.join(os.path.expanduser("~/Pictures"), filename)
-            try:
-                pixbuf = GdkPixbuf.Pixbuf.new_from_file(filepath)
-                scaled = pixbuf.scale_simple(allocation.width, allocation.height, GdkPixbuf.InterpType.BILINEAR)
-                self.image.set_from_pixbuf(scaled)
-            except Exception as e:
-                logger.error(f"PhotosTab: Error scaling image: {e}")
+        # Recalculate image scaling when the container is resized.
+        self.update_image()
+        
+    def update_image(self):
+        if self.current_filepath is None:
+            return
+        try:
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file(self.current_filepath)
+            orig_width = pixbuf.get_width()
+            orig_height = pixbuf.get_height()
+            alloc = self.event_box.get_allocation()
+            # Calculate scale factor to fit the image within the container.
+            scale_factor = min(alloc.width / orig_width, alloc.height / orig_height)
+            new_width = int(orig_width * scale_factor)
+            new_height = int(orig_height * scale_factor)
+            scaled = pixbuf.scale_simple(new_width, new_height, GdkPixbuf.InterpType.BILINEAR)
+            self.image.set_from_pixbuf(scaled)
+        except Exception as e:
+            logger.error(f"PhotosTab: Error scaling image: {e}")
+
+
 
 ### VIDEOS TAB ###
 class VideosTab(Gtk.Box):
