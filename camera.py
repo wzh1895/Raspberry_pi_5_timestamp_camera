@@ -530,7 +530,7 @@ class VideosTab(Gtk.Box):
 ### MAIN WINDOW WITH NOTEBOOK ###
 class MainWindow(Gtk.Window):
     def __init__(self):
-        super().__init__(title="Media Controller")
+        super().__init__(title="Timestamp Camera")
         self.set_default_size(800, 480)
         self.connect("delete-event", Gtk.main_quit)
         notebook = Gtk.Notebook()
