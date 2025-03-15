@@ -84,7 +84,7 @@ class CameraTab(Gtk.Box):
         """
         pipeline_desc = f"""
             libcamerasrc name=cam ! videoconvert ! video/x-raw,format=NV12,width=1920,height=1080 ! tee name=t
-            t. ! queue ! videoscale ! video/x-raw,width=640,height=360 !
+            t. ! queue ! videoscale ! video/x-raw !
                 textoverlay name=crosshair_pre1 text="+" halignment=center valignment=center
                     font-desc="Sans,48" color=0xFFFFFF draw-outline=true outline-color=0x000000 !
                 clockoverlay name=preview_clock halignment=right valignment=bottom shaded-background=true
