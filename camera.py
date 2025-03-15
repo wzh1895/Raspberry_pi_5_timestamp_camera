@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-import gi
-import os
-import datetime
-import logging
-
+import gi, os, datetime, logging, threading
 gi.require_version("Gst", "1.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gst, Gtk, GLib
+from gi.repository import Gst, Gtk, GLib, GObject
 
-# Configure verbose logging
+# Configure verbose logging.
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -18,33 +14,31 @@ logger = logging.getLogger(__name__)
 
 Gst.init(None)
 
-class CameraApp(Gtk.Window):
+### CAMERA TAB ###
+class CameraTab(Gtk.Box):
     def __init__(self):
-        super().__init__(title="Camera Controller")
-        self.set_default_size(1000, 600)
-
-        # Main container: horizontal box splitting window into two parts.
-        main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
-        self.add(main_box)
+        # Horizontal box: video on left, controls on right.
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self.set_hexpand(True)
+        self.set_vexpand(True)
 
         # Video preview area on the left.
         self.video_box = Gtk.Box()
-        main_box.pack_start(self.video_box, True, True, 0)
+        self.pack_start(self.video_box, True, True, 0)
 
-        # Controls area on the right with no extra spacing.
+        # Controls area on the right.
         control_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         control_box.set_vexpand(True)
-        main_box.pack_start(control_box, False, False, 0)
+        self.pack_start(control_box, False, False, 0)
 
-        # Vertical box for buttons to take equal space, no spacing.
+        # Vertical box for buttons.
         button_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         button_box.set_vexpand(True)
         control_box.pack_start(button_box, True, True, 0)
 
-        # Create buttons with symbols.
+        # Create buttons (using plain text here; install an emoji font if desired).
         self.photo_button  = Gtk.Button(label="📷")
         self.record_button = Gtk.Button(label="⏺")
-        # Set each button to expand and fill half of the available height.
         self.photo_button.set_hexpand(True)
         self.photo_button.set_vexpand(True)
         self.record_button.set_hexpand(True)
@@ -52,141 +46,101 @@ class CameraApp(Gtk.Window):
         button_box.pack_start(self.photo_button, True, True, 0)
         button_box.pack_start(self.record_button, True, True, 0)
 
-
         self.photo_button.connect("clicked", self.on_photo_clicked)
         self.record_button.connect("clicked", self.on_record_clicked)
 
         self.pipeline = None
         self.mode = None  # "preview" or "record"
 
-        # Use gtksink if available, otherwise fall back.
         if Gst.ElementFactory.find("gtksink"):
             self.video_sink_element = "gtksink name=video_sink"
             self.embed_video = True
-            logger.debug("Using gtksink for video embedding.")
+            logger.debug("CameraTab: using gtksink.")
         else:
             self.video_sink_element = "autovideosink"
             self.embed_video = False
-            logger.warning("gtksink not found; using autovideosink => floating preview window.")
+            logger.warning("CameraTab: gtksink not found; using autovideosink.")
 
-        # Start the preview automatically.
         GLib.idle_add(self.on_preview_clicked, None)
 
     def choose_encoder(self):
         if Gst.ElementFactory.find("x264enc"):
-            logger.debug("Using x264enc as H.264 encoder.")
+            logger.debug("CameraTab: Using x264enc as H.264 encoder.")
             return "x264enc"
         elif Gst.ElementFactory.find("openh264enc"):
-            logger.debug("Using openh264enc as H.264 encoder.")
+            logger.debug("CameraTab: Using openh264enc as H.264 encoder.")
             return "openh264enc"
         else:
-            logger.error("No H264 encoder found. Install gstreamer1.0-plugins-ugly or similar.")
+            logger.error("CameraTab: No H264 encoder found.")
             return "x264enc"
 
     def build_preview_pipeline(self):
         """
         Preview pipeline branches into:
-          1) Crosshair + final preview sink with clock overlay.
-          2) Crosshair + bottom-right date/time for photo capture.
+          1) Crosshair + preview sink with clock overlay.
+          2) Crosshair + clock overlay for photo capture.
         """
         pipeline_desc = f"""
             libcamerasrc name=cam ! videoconvert ! video/x-raw,format=NV12,width=1920,height=1080 ! tee name=t
             t. ! queue ! videoscale ! video/x-raw,width=640,height=360 !
                 textoverlay name=crosshair_pre1
-                    text="+"
-                    halignment=center
-                    valignment=center
-                    font-desc="Sans,48"
-                    color=0xFFFFFF
-                    draw-outline=true
-                    outline-color=0x000000 !
+                    text="+" halignment=center valignment=center
+                    font-desc="Sans,48" color=0xFFFFFF draw-outline=true outline-color=0x000000 !
                 clockoverlay name=preview_clock
-                    halignment=right
-                    valignment=bottom
-                    shaded-background=true
-                    font-desc="Sans,20"
-                    time-format="%Y-%m-%d %H:%M:%S" !
-                videoconvert !
-                {self.video_sink_element}
+                    halignment=right valignment=bottom shaded-background=true
+                    font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
+                videoconvert ! {self.video_sink_element}
             t. ! queue !
                 clockoverlay name=photo_clock
-                    halignment=right
-                    valignment=bottom
-                    shaded-background=true
-                    font-desc="Sans,20"
-                    time-format="%Y-%m-%d %H:%M:%S" !
-                videoconvert !
-                jpegenc !
-                appsink name=photo_sink max-buffers=1 drop=true
+                    halignment=right valignment=bottom shaded-background=true
+                    font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
+                videoconvert ! jpegenc ! appsink name=photo_sink max-buffers=1 drop=true
         """
         pipeline_desc = " ".join(pipeline_desc.split())
-        logger.debug("Preview pipeline:\n%s", pipeline_desc)
+        logger.debug("CameraTab preview pipeline:\n%s", pipeline_desc)
         return Gst.parse_launch(pipeline_desc)
 
     def build_record_pipeline(self, video_filename):
         """
         Record pipeline branches into:
-          1) Crosshair => show in preview sink with overlays.
-          2) Crosshair => real date/time and elapsed time => splitmuxsink.
-          3) Crosshair => real date/time for photo capture.
+          1) Crosshair + preview sink with overlays.
+          2) Crosshair + overlays (real time and elapsed) -> splitmuxsink.
+          3) Crosshair + clock overlay for photo capture.
         """
         encoder = self.choose_encoder()
         pipeline_desc = f"""
             libcamerasrc name=cam ! videoconvert ! video/x-raw,format=NV12,width=1920,height=1080 ! tee name=t
             t. ! queue !
                 textoverlay name=crosshair_pre2
-                    text="+"
-                    halignment=center
-                    valignment=center
-                    font-desc="Sans,48"
-                    color=0xFFFFFF
-                    draw-outline=true
-                    outline-color=0x000000 !
+                    text="+" halignment=center valignment=center
+                    font-desc="Sans,48" color=0xFFFFFF draw-outline=true outline-color=0x000000 !
                 clockoverlay name=video_preview_clock
-                    halignment=right
-                    valignment=bottom
-                    shaded-background=true
-                    font-desc="Sans,20"
-                    time-format="%Y-%m-%d %H:%M:%S" !
+                    halignment=right valignment=bottom shaded-background=true
+                    font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
                 timeoverlay name=video_preview_elapsed_time
-                    halignment=left
-                    valignment=bottom
-                    shaded-background=true
-                    font-desc="Sans,20"
-                    time-mode=elapsed-running-time !
-                videoconvert !
-                {self.video_sink_element}
+                    halignment=left valignment=bottom shaded-background=true
+                    font-desc="Sans,20" time-mode=elapsed-running-time !
+                videoconvert ! {self.video_sink_element}
             t. ! queue !
                 clockoverlay name=video_clock
-                    halignment=right
-                    valignment=bottom
-                    shaded-background=true
-                    font-desc="Sans,20"
-                    time-format="%Y-%m-%d %H:%M:%S" !
+                    halignment=right valignment=bottom shaded-background=true
+                    font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
                 timeoverlay name=video_elapsed_time
-                    halignment=left
-                    valignment=bottom
-                    shaded-background=true
-                    font-desc="Sans,20"
-                    time-mode=elapsed-running-time !
-                videoconvert ! {encoder} speed-preset=ultrafast tune=zerolatency ! splitmuxsink name=splitmux
+                    halignment=left valignment=bottom shaded-background=true
+                    font-desc="Sans,20" time-mode=elapsed-running-time !
+                videoconvert ! {encoder} speed-preset=ultrafast tune=zerolatency !
+                splitmuxsink name=splitmux
             t. ! queue !
                 clockoverlay name=video_photo_clock
-                    halignment=right
-                    valignment=bottom
-                    shaded-background=true
-                    font-desc="Sans,20"
-                    time-format="%Y-%m-%d %H:%M:%S" !
+                    halignment=right valignment=bottom shaded-background=true
+                    font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
                 timeoverlay name=video_photo_elapsed_time
-                    halignment=left
-                    valignment=bottom
-                    shaded-background=true
-                    font-desc="Sans,20"
-                    time-mode=elapsed-running-time !
+                    halignment=left valignment=bottom shaded-background=true
+                    font-desc="Sans,20" time-mode=elapsed-running-time !
                 videoconvert ! jpegenc ! appsink name=photo_sink max-buffers=1 drop=true
         """
         pipeline_desc = " ".join(pipeline_desc.split())
-        logger.debug("Record pipeline:\n%s", pipeline_desc)
+        logger.debug("CameraTab record pipeline:\n%s", pipeline_desc)
         pipeline = Gst.parse_launch(pipeline_desc)
         splitmux = pipeline.get_by_name("splitmux")
         splitmux.set_property("location", video_filename)
@@ -194,7 +148,6 @@ class CameraApp(Gtk.Window):
         return pipeline
 
     def embed_video_widget(self):
-        """Embed the video sink widget into our GTK layout."""
         if not self.pipeline or not self.embed_video:
             return False
         gtksink = self.pipeline.get_by_name("video_sink")
@@ -203,40 +156,38 @@ class CameraApp(Gtk.Window):
             if video_widget:
                 toplevel = video_widget.get_toplevel()
                 if isinstance(toplevel, Gtk.Window) and toplevel is not self:
-                    logger.debug("Hiding floating window of video widget.")
+                    logger.debug("CameraTab: Hiding floating video widget window.")
                     toplevel.hide()
                 parent = video_widget.get_parent()
                 if parent and parent is not self.video_box:
-                    logger.debug("Removing video widget from old parent.")
+                    logger.debug("CameraTab: Removing video widget from old parent.")
                     parent.remove(video_widget)
                 if not video_widget.get_parent():
-                    logger.debug("Embedding video widget into main window.")
+                    logger.debug("CameraTab: Embedding video widget into main window.")
                     self.video_box.pack_start(video_widget, True, True, 0)
                 video_widget.show_all()
         return False
 
     def on_bus_message(self, bus, message):
-        """Handle bus messages for logging and error handling."""
         t = message.type
-        logger.debug("Bus message: %s", t)
+        logger.debug("CameraTab bus message: %s", t)
         if t == Gst.MessageType.ERROR:
             err, debug = message.parse_error()
-            logger.error("Bus ERROR: %s - %s", err, debug)
+            logger.error("CameraTab bus ERROR: %s - %s", err, debug)
             self.stop_pipeline()
         else:
-            logger.debug("Other bus message: %s", t)
+            logger.debug("CameraTab other bus message: %s", t)
 
     def fallback_stop(self):
-        """If EOS not seen, forcibly stop the pipeline."""
         if self.mode == "record":
-            logger.warning("Forcing pipeline stop; restarting preview.")
+            logger.warning("CameraTab: Forcing pipeline stop; restarting preview.")
             self.stop_pipeline()
             GLib.idle_add(self.on_preview_clicked, None)
         return False
 
     def stop_pipeline(self):
         if self.pipeline:
-            logger.debug("Stopping pipeline => NULL state.")
+            logger.debug("CameraTab: Stopping pipeline (NULL state).")
             self.pipeline.set_state(Gst.State.NULL)
             self.pipeline = None
             self.mode = None
@@ -245,8 +196,7 @@ class CameraApp(Gtk.Window):
                 self.video_box.remove(child)
 
     def on_preview_clicked(self, widget):
-        """ Start the preview pipeline. """
-        logger.debug("Starting PREVIEW pipeline...")
+        logger.debug("CameraTab: Starting PREVIEW pipeline...")
         self.stop_pipeline()
         self.pipeline = self.build_preview_pipeline()
         self.pipeline.set_state(Gst.State.PLAYING)
@@ -256,11 +206,11 @@ class CameraApp(Gtk.Window):
         bus.connect("message", self.on_bus_message)
         if self.embed_video:
             GLib.idle_add(self.embed_video_widget)
-        logger.info("Preview started.")
+        logger.info("CameraTab: Preview started.")
 
     def on_record_clicked(self, widget):
         if self.mode != "record":
-            logger.debug("Starting RECORD pipeline...")
+            logger.debug("CameraTab: Starting RECORD pipeline...")
             self.stop_pipeline()
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             video_filename = os.path.expanduser(f"~/Videos/video_{timestamp}.mp4")
@@ -273,32 +223,26 @@ class CameraApp(Gtk.Window):
             bus.connect("message", self.on_bus_message)
             if self.embed_video:
                 GLib.idle_add(self.embed_video_widget)
-            logger.info("Recording started.")
+            logger.info("CameraTab: Recording started.")
         else:
-            logger.debug("Stopping RECORD => sending EOS, waiting 2s, then fallback.")
+            logger.debug("CameraTab: Stopping RECORD => sending EOS, waiting 2s fallback.")
             eos_event = Gst.Event.new_eos()
             result = self.pipeline.send_event(eos_event)
             if result:
-                logger.info("EOS event sent successfully.")
+                logger.info("CameraTab: EOS event sent successfully.")
             else:
-                logger.error("Failed to send EOS event.")
-            # Wait 2 seconds, then forcibly stop.
+                logger.error("CameraTab: Failed to send EOS event.")
             GLib.timeout_add(2000, self.fallback_stop)
 
     def on_photo_clicked(self, widget):
-        """
-        Capture a photo from the 'photo_sink' branch.
-        The branch has a clockoverlay in the bottom-right.
-        """
         if not self.pipeline:
-            logger.warning("No active pipeline => cannot capture photo.")
+            logger.warning("CameraTab: No active pipeline => cannot capture photo.")
             return
         appsink = self.pipeline.get_by_name("photo_sink")
         if not appsink:
-            logger.error("No 'photo_sink' in pipeline => cannot capture photo.")
+            logger.error("CameraTab: No 'photo_sink' in pipeline => cannot capture photo.")
             return
-
-        logger.debug("Attempting to pull a photo sample...")
+        logger.debug("CameraTab: Attempting to pull a photo sample...")
         sample = appsink.emit("try-pull-sample", 1 * Gst.SECOND)
         if sample:
             buf = sample.get_buffer()
@@ -309,18 +253,222 @@ class CameraApp(Gtk.Window):
                 with open(photo_filename, "wb") as f:
                     f.write(mapinfo.data)
                 buf.unmap(mapinfo)
-                logger.info(f"Photo saved to {photo_filename}")
+                logger.info(f"CameraTab: Photo saved to {photo_filename}")
             else:
-                logger.error("Failed mapping buffer for reading.")
+                logger.error("CameraTab: Failed mapping buffer for reading.")
         else:
-            logger.error("No sample pulled for photo; possibly no new frames available.")
+            logger.error("CameraTab: No sample pulled for photo; possibly no new frames available.")
+
+### PHOTOS TAB ###
+class PhotosTab(Gtk.Box):
+    def __init__(self):
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self.set_hexpand(True)
+        self.set_vexpand(True)
+        
+        # Left: a scrolled window with a list of image files.
+        self.file_list_store = Gtk.ListStore(str)
+        self.populate_file_list()
+        self.treeview = Gtk.TreeView(model=self.file_list_store)
+        renderer = Gtk.CellRendererText()
+        column = Gtk.TreeViewColumn("Photos", renderer, text=0)
+        self.treeview.append_column(column)
+        self.treeview.get_selection().connect("changed", self.on_selection_changed)
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.add(self.treeview)
+        scrolled.set_min_content_width(200)
+        self.pack_start(scrolled, False, False, 0)
+        
+        # Right: an image widget for preview.
+        self.image = Gtk.Image()
+        self.image.set_hexpand(True)
+        self.image.set_vexpand(True)
+        self.pack_start(self.image, True, True, 0)
+        
+    def populate_file_list(self):
+        pictures_dir = os.path.expanduser("~/Pictures")
+        self.file_list_store.clear()
+        if os.path.exists(pictures_dir):
+            files = sorted(os.listdir(pictures_dir))
+            for f in files:
+                if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
+                    self.file_list_store.append([f])
+                    
+    def on_selection_changed(self, selection):
+        model, treeiter = selection.get_selected()
+        if treeiter:
+            filename = model[treeiter][0]
+            filepath = os.path.join(os.path.expanduser("~/Pictures"), filename)
+            logger.info(f"PhotosTab: Selected {filepath}")
+            self.image.set_from_file(filepath)
+
+### VIDEOS TAB ###
+class VideosTab(Gtk.Box):
+    def __init__(self):
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self.set_hexpand(True)
+        self.set_vexpand(True)
+        
+        # Left: list of video files.
+        self.file_list_store = Gtk.ListStore(str)
+        self.populate_file_list()
+        self.treeview = Gtk.TreeView(model=self.file_list_store)
+        renderer = Gtk.CellRendererText()
+        column = Gtk.TreeViewColumn("Videos", renderer, text=0)
+        self.treeview.append_column(column)
+        self.treeview.get_selection().connect("changed", self.on_selection_changed)
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.add(self.treeview)
+        scrolled.set_min_content_width(200)
+        self.pack_start(scrolled, False, False, 0)
+        
+        # Right: video area with basic controls.
+        self.video_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        self.pack_start(self.video_area, True, True, 0)
+        
+        # Video widget using Gtk.DrawingArea.
+        self.drawing_area = Gtk.DrawingArea()
+        self.drawing_area.set_size_request(640, 360)
+        self.video_area.pack_start(self.drawing_area, True, True, 0)
+        
+        # Control bar with play/pause button and progress scale.
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        self.play_button = Gtk.Button(label="▶")
+        self.play_button.connect("clicked", self.on_play_pause)
+        self.scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL)
+        self.scale.set_range(0, 100)
+        self.scale.set_draw_value(False)
+        controls.pack_start(self.play_button, False, False, 0)
+        controls.pack_start(self.scale, True, True, 0)
+        self.video_area.pack_start(controls, False, False, 0)
+        
+        # GStreamer playbin for video playback.
+        self.playbin = Gst.ElementFactory.make("playbin", "playbin")
+        self.playbin.set_property("video-sink", Gst.ElementFactory.make("gtksink", "gtksink_video"))
+        if self.playbin.get_property("video-sink"):
+            # Embed the gtksink widget into our drawing_area.
+            GLib.idle_add(self.embed_video)
+        
+        self.is_playing = False
+        self.duration = Gst.CLOCK_TIME_NONE
+        self.bus = self.playbin.get_bus()
+        self.bus.add_signal_watch()
+        self.bus.connect("message", self.on_bus_message)
+        
+        # Update progress periodically.
+        GLib.timeout_add(500, self.update_progress)
+        
+    def populate_file_list(self):
+        videos_dir = os.path.expanduser("~/Videos")
+        self.file_list_store.clear()
+        if os.path.exists(videos_dir):
+            files = sorted(os.listdir(videos_dir))
+            for f in files:
+                if f.lower().endswith(('.mp4', '.mkv', '.avi')):
+                    self.file_list_store.append([f])
+                    
+    def on_selection_changed(self, selection):
+        model, treeiter = selection.get_selected()
+        if treeiter:
+            filename = model[treeiter][0]
+            filepath = os.path.join(os.path.expanduser("~/Videos"), filename)
+            logger.info(f"VideosTab: Selected {filepath}")
+            self.playbin.set_state(Gst.State.NULL)
+            self.playbin.set_property("uri", "file://" + filepath)
+            self.playbin.set_state(Gst.State.PLAYING)
+            self.is_playing = True
+            self.play_button.set_label("⏸")
+            
+    def embed_video(self):
+        video_sink = self.playbin.get_property("video-sink")
+        if video_sink:
+            widget = video_sink.props.widget
+            if widget:
+                # Remove existing widget from drawing_area if any.
+                for child in self.drawing_area.get_children():
+                    self.drawing_area.remove(child)
+                self.drawing_area.add(widget)
+                widget.show_all()
+        return False
+
+    def on_play_pause(self, button):
+        if self.is_playing:
+            self.playbin.set_state(Gst.State.PAUSED)
+            self.is_playing = False
+            button.set_label("▶")
+        else:
+            self.playbin.set_state(Gst.State.PLAYING)
+            self.is_playing = True
+            button.set_label("⏸")
+            
+    def on_bus_message(self, bus, message):
+        t = message.type
+        if t == Gst.MessageType.EOS:
+            logger.info("VideosTab: EOS received, stopping playback.")
+            self.playbin.set_state(Gst.State.NULL)
+            self.is_playing = False
+            self.play_button.set_label("▶")
+        elif t == Gst.MessageType.ERROR:
+            err, debug = message.parse_error()
+            logger.error(f"VideosTab: Bus ERROR: {err} - {debug}")
+            self.playbin.set_state(Gst.State.NULL)
+            self.is_playing = False
+            self.play_button.set_label("▶")
+        elif t == Gst.MessageType.DURATION:
+            self.duration = self.playbin.query_duration(Gst.Format.TIME)[1]
+            
+    def update_progress(self):
+        if self.is_playing and self.duration != Gst.CLOCK_TIME_NONE:
+            ret, pos = self.playbin.query_position(Gst.Format.TIME)
+            if ret:
+                fraction = pos / self.duration
+                self.scale.set_value(fraction * 100)
+        return True
+
+    def stop_playback(self):
+        self.playbin.set_state(Gst.State.NULL)
+        self.is_playing = False
+        self.play_button.set_label("▶")
+
+    def on_hide(self):
+        # Called when tab is switched.
+        self.stop_playback()
+
+### MAIN WINDOW WITH NOTEBOOK ###
+class MainWindow(Gtk.Window):
+    def __init__(self):
+        super().__init__(title="Media Controller")
+        self.set_default_size(800, 480)
+        self.connect("delete-event", Gtk.main_quit)
+
+        notebook = Gtk.Notebook()
+        self.add(notebook)
+
+        # Camera tab.
+        camera_tab = CameraTab()
+        notebook.append_page(camera_tab, Gtk.Label(label="Camera"))
+
+        # Photos tab.
+        photos_tab = PhotosTab()
+        notebook.append_page(photos_tab, Gtk.Label(label="Photos"))
+
+        # Videos tab.
+        self.videos_tab = VideosTab()
+        notebook.append_page(self.videos_tab, Gtk.Label(label="Videos"))
+        
+        notebook.connect("switch-page", self.on_switch_page)
+        
+    def on_switch_page(self, notebook, page, page_num):
+        # When leaving the Videos tab, stop playback.
+        label = notebook.get_tab_label_text(page)
+        if label != "Videos" and hasattr(self, "videos_tab"):
+            self.videos_tab.stop_playback()
 
 def main():
     os.makedirs(os.path.expanduser("~/Pictures"), exist_ok=True)
     os.makedirs(os.path.expanduser("~/Videos"), exist_ok=True)
-    app = CameraApp()
-    app.connect("destroy", Gtk.main_quit)
-    app.show_all()
+    win = MainWindow()
+    win.show_all()
     Gtk.main()
 
 if __name__ == "__main__":
