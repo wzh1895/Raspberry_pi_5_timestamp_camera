@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-import gi, os, datetime, logging, threading
+import gi, os, datetime, logging
 gi.require_version("Gst", "1.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gst, Gtk, GLib, GObject
+from gi.repository import Gst, Gtk, GLib, GdkPixbuf
 
 # Configure verbose logging.
 logging.basicConfig(
@@ -36,7 +36,7 @@ class CameraTab(Gtk.Box):
         button_box.set_vexpand(True)
         control_box.pack_start(button_box, True, True, 0)
 
-        # Create buttons (using plain text here; install an emoji font if desired).
+        # Create buttons (using symbols – if emoji not available, use text labels).
         self.photo_button  = Gtk.Button(label="📷")
         self.record_button = Gtk.Button(label="⏺")
         self.photo_button.set_hexpand(True)
@@ -52,15 +52,17 @@ class CameraTab(Gtk.Box):
         self.pipeline = None
         self.mode = None  # "preview" or "record"
 
+        # Use gtksink if available.
         if Gst.ElementFactory.find("gtksink"):
             self.video_sink_element = "gtksink name=video_sink"
             self.embed_video = True
-            logger.debug("CameraTab: using gtksink.")
+            logger.debug("CameraTab: using gtksink for video embedding.")
         else:
             self.video_sink_element = "autovideosink"
             self.embed_video = False
             logger.warning("CameraTab: gtksink not found; using autovideosink.")
 
+        # Auto-start preview.
         GLib.idle_add(self.on_preview_clicked, None)
 
     def choose_encoder(self):
@@ -76,23 +78,20 @@ class CameraTab(Gtk.Box):
 
     def build_preview_pipeline(self):
         """
-        Preview pipeline branches into:
-          1) Crosshair + preview sink with clock overlay.
-          2) Crosshair + clock overlay for photo capture.
+        Preview pipeline:
+         - Branch 1: Crosshair + clock overlay + preview sink.
+         - Branch 2: Clock overlay for photo capture.
         """
         pipeline_desc = f"""
             libcamerasrc name=cam ! videoconvert ! video/x-raw,format=NV12,width=1920,height=1080 ! tee name=t
             t. ! queue ! videoscale ! video/x-raw,width=640,height=360 !
-                textoverlay name=crosshair_pre1
-                    text="+" halignment=center valignment=center
+                textoverlay name=crosshair_pre1 text="+" halignment=center valignment=center
                     font-desc="Sans,48" color=0xFFFFFF draw-outline=true outline-color=0x000000 !
-                clockoverlay name=preview_clock
-                    halignment=right valignment=bottom shaded-background=true
+                clockoverlay name=preview_clock halignment=right valignment=bottom shaded-background=true
                     font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
                 videoconvert ! {self.video_sink_element}
             t. ! queue !
-                clockoverlay name=photo_clock
-                    halignment=right valignment=bottom shaded-background=true
+                clockoverlay name=photo_clock halignment=right valignment=bottom shaded-background=true
                     font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
                 videoconvert ! jpegenc ! appsink name=photo_sink max-buffers=1 drop=true
         """
@@ -102,40 +101,33 @@ class CameraTab(Gtk.Box):
 
     def build_record_pipeline(self, video_filename):
         """
-        Record pipeline branches into:
-          1) Crosshair + preview sink with overlays.
-          2) Crosshair + overlays (real time and elapsed) -> splitmuxsink.
-          3) Crosshair + clock overlay for photo capture.
+        Record pipeline:
+         - Branch 1: Crosshair + overlays in preview sink.
+         - Branch 2: Overlays (real time & elapsed) -> splitmuxsink.
+         - Branch 3: Overlays for photo capture.
         """
         encoder = self.choose_encoder()
         pipeline_desc = f"""
             libcamerasrc name=cam ! videoconvert ! video/x-raw,format=NV12,width=1920,height=1080 ! tee name=t
             t. ! queue !
-                textoverlay name=crosshair_pre2
-                    text="+" halignment=center valignment=center
+                textoverlay name=crosshair_pre2 text="+" halignment=center valignment=center
                     font-desc="Sans,48" color=0xFFFFFF draw-outline=true outline-color=0x000000 !
-                clockoverlay name=video_preview_clock
-                    halignment=right valignment=bottom shaded-background=true
+                clockoverlay name=video_preview_clock halignment=right valignment=bottom shaded-background=true
                     font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
-                timeoverlay name=video_preview_elapsed_time
-                    halignment=left valignment=bottom shaded-background=true
+                timeoverlay name=video_preview_elapsed_time halignment=left valignment=bottom shaded-background=true
                     font-desc="Sans,20" time-mode=elapsed-running-time !
                 videoconvert ! {self.video_sink_element}
             t. ! queue !
-                clockoverlay name=video_clock
-                    halignment=right valignment=bottom shaded-background=true
+                clockoverlay name=video_clock halignment=right valignment=bottom shaded-background=true
                     font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
-                timeoverlay name=video_elapsed_time
-                    halignment=left valignment=bottom shaded-background=true
+                timeoverlay name=video_elapsed_time halignment=left valignment=bottom shaded-background=true
                     font-desc="Sans,20" time-mode=elapsed-running-time !
                 videoconvert ! {encoder} speed-preset=ultrafast tune=zerolatency !
                 splitmuxsink name=splitmux
             t. ! queue !
-                clockoverlay name=video_photo_clock
-                    halignment=right valignment=bottom shaded-background=true
+                clockoverlay name=video_photo_clock halignment=right valignment=bottom shaded-background=true
                     font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
-                timeoverlay name=video_photo_elapsed_time
-                    halignment=left valignment=bottom shaded-background=true
+                timeoverlay name=video_photo_elapsed_time halignment=left valignment=bottom shaded-background=true
                     font-desc="Sans,20" time-mode=elapsed-running-time !
                 videoconvert ! jpegenc ! appsink name=photo_sink max-buffers=1 drop=true
         """
@@ -144,7 +136,7 @@ class CameraTab(Gtk.Box):
         pipeline = Gst.parse_launch(pipeline_desc)
         splitmux = pipeline.get_by_name("splitmux")
         splitmux.set_property("location", video_filename)
-        logger.debug("Recording file -> %s", video_filename)
+        logger.debug("CameraTab: Recording file -> %s", video_filename)
         return pipeline
 
     def embed_video_widget(self):
@@ -268,7 +260,6 @@ class PhotosTab(Gtk.Box):
         
         # Left: a scrolled window with a list of image files.
         self.file_list_store = Gtk.ListStore(str)
-        self.populate_file_list()
         self.treeview = Gtk.TreeView(model=self.file_list_store)
         renderer = Gtk.CellRendererText()
         column = Gtk.TreeViewColumn("Photos", renderer, text=0)
@@ -283,7 +274,14 @@ class PhotosTab(Gtk.Box):
         self.image = Gtk.Image()
         self.image.set_hexpand(True)
         self.image.set_vexpand(True)
-        self.pack_start(self.image, True, True, 0)
+        # Wrap in an EventBox to catch size allocation.
+        self.event_box = Gtk.EventBox()
+        self.event_box.add(self.image)
+        self.event_box.connect("size-allocate", self.on_image_allocate)
+        self.pack_start(self.event_box, True, True, 0)
+        
+        # Refresh file list when the tab is mapped.
+        self.connect("map", lambda w: self.populate_file_list())
         
     def populate_file_list(self):
         pictures_dir = os.path.expanduser("~/Pictures")
@@ -300,7 +298,25 @@ class PhotosTab(Gtk.Box):
             filename = model[treeiter][0]
             filepath = os.path.join(os.path.expanduser("~/Pictures"), filename)
             logger.info(f"PhotosTab: Selected {filepath}")
-            self.image.set_from_file(filepath)
+            # Load image and scale to fit event_box size.
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file(filepath)
+            alloc = self.event_box.get_allocation()
+            scaled = pixbuf.scale_simple(alloc.width, alloc.height, GdkPixbuf.InterpType.BILINEAR)
+            self.image.set_from_pixbuf(scaled)
+            
+    def on_image_allocate(self, widget, allocation):
+        # When the container is resized, re-load the selected image if any.
+        selection = self.treeview.get_selection()
+        model, treeiter = selection.get_selected()
+        if treeiter:
+            filename = model[treeiter][0]
+            filepath = os.path.join(os.path.expanduser("~/Pictures"), filename)
+            try:
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file(filepath)
+                scaled = pixbuf.scale_simple(allocation.width, allocation.height, GdkPixbuf.InterpType.BILINEAR)
+                self.image.set_from_pixbuf(scaled)
+            except Exception as e:
+                logger.error(f"PhotosTab: Error scaling image: {e}")
 
 ### VIDEOS TAB ###
 class VideosTab(Gtk.Box):
@@ -311,7 +327,6 @@ class VideosTab(Gtk.Box):
         
         # Left: list of video files.
         self.file_list_store = Gtk.ListStore(str)
-        self.populate_file_list()
         self.treeview = Gtk.TreeView(model=self.file_list_store)
         renderer = Gtk.CellRendererText()
         column = Gtk.TreeViewColumn("Videos", renderer, text=0)
@@ -324,14 +339,17 @@ class VideosTab(Gtk.Box):
         
         # Right: video area with basic controls.
         self.video_area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        self.video_area.set_hexpand(True)
+        self.video_area.set_vexpand(True)
         self.pack_start(self.video_area, True, True, 0)
         
         # Video widget using Gtk.DrawingArea.
         self.drawing_area = Gtk.DrawingArea()
-        self.drawing_area.set_size_request(640, 360)
+        self.drawing_area.set_hexpand(True)
+        self.drawing_area.set_vexpand(True)
         self.video_area.pack_start(self.drawing_area, True, True, 0)
         
-        # Control bar with play/pause button and progress scale.
+        # Control bar with play/pause and progress.
         controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
         self.play_button = Gtk.Button(label="▶")
         self.play_button.connect("clicked", self.on_play_pause)
@@ -344,19 +362,19 @@ class VideosTab(Gtk.Box):
         
         # GStreamer playbin for video playback.
         self.playbin = Gst.ElementFactory.make("playbin", "playbin")
-        self.playbin.set_property("video-sink", Gst.ElementFactory.make("gtksink", "gtksink_video"))
-        if self.playbin.get_property("video-sink"):
-            # Embed the gtksink widget into our drawing_area.
+        video_sink = Gst.ElementFactory.make("gtksink", "gtksink_video")
+        if video_sink:
+            self.playbin.set_property("video-sink", video_sink)
             GLib.idle_add(self.embed_video)
-        
         self.is_playing = False
         self.duration = Gst.CLOCK_TIME_NONE
         self.bus = self.playbin.get_bus()
         self.bus.add_signal_watch()
         self.bus.connect("message", self.on_bus_message)
-        
-        # Update progress periodically.
         GLib.timeout_add(500, self.update_progress)
+        
+        # Refresh list when tab is mapped.
+        self.connect("map", lambda w: self.populate_file_list())
         
     def populate_file_list(self):
         videos_dir = os.path.expanduser("~/Videos")
@@ -384,7 +402,6 @@ class VideosTab(Gtk.Box):
         if video_sink:
             widget = video_sink.props.widget
             if widget:
-                # Remove existing widget from drawing_area if any.
                 for child in self.drawing_area.get_children():
                     self.drawing_area.remove(child)
                 self.drawing_area.add(widget)
@@ -431,7 +448,6 @@ class VideosTab(Gtk.Box):
         self.play_button.set_label("▶")
 
     def on_hide(self):
-        # Called when tab is switched.
         self.stop_playback()
 
 ### MAIN WINDOW WITH NOTEBOOK ###
@@ -445,12 +461,12 @@ class MainWindow(Gtk.Window):
         self.add(notebook)
 
         # Camera tab.
-        camera_tab = CameraTab()
-        notebook.append_page(camera_tab, Gtk.Label(label="Camera"))
+        self.camera_tab = CameraTab()
+        notebook.append_page(self.camera_tab, Gtk.Label(label="Camera"))
 
         # Photos tab.
-        photos_tab = PhotosTab()
-        notebook.append_page(photos_tab, Gtk.Label(label="Photos"))
+        self.photos_tab = PhotosTab()
+        notebook.append_page(self.photos_tab, Gtk.Label(label="Photos"))
 
         # Videos tab.
         self.videos_tab = VideosTab()
@@ -459,8 +475,13 @@ class MainWindow(Gtk.Window):
         notebook.connect("switch-page", self.on_switch_page)
         
     def on_switch_page(self, notebook, page, page_num):
-        # When leaving the Videos tab, stop playback.
+        # Refresh lists when switching to Photos or Videos tab.
         label = notebook.get_tab_label_text(page)
+        if label == "Photos" and hasattr(self.photos_tab, "populate_file_list"):
+            self.photos_tab.populate_file_list()
+        if label == "Videos" and hasattr(self.videos_tab, "populate_file_list"):
+            self.videos_tab.populate_file_list()
+        # When leaving Videos tab, stop playback.
         if label != "Videos" and hasattr(self, "videos_tab"):
             self.videos_tab.stop_playback()
 
