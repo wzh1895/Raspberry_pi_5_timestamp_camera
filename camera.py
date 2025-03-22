@@ -82,7 +82,7 @@ class CameraTab(Gtk.Box):
          - Branch 1: Crosshair + clock overlay + preview sink.
          - Branch 2: Clock overlay for photo capture.
         """
-        pipeline_desc = f"""
+        pipeline_desc_1 = f"""
             libcamerasrc name=cam ! videoconvert ! video/x-raw,format=NV12,width=1920,height=1080 ! tee name=t
             t. ! queue ! videoscale ! video/x-raw !
                 textoverlay name=crosshair_pre1 text="+" halignment=center valignment=center
@@ -95,7 +95,21 @@ class CameraTab(Gtk.Box):
                     font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
                 videoconvert ! jpegenc ! appsink name=photo_sink max-buffers=1 drop=true
         """
-        pipeline_desc = " ".join(pipeline_desc.split())
+
+        pipeline_desc_2 = f"""
+            v4l2src device=/dev/video0 ! image/jpeg,width=1920,height=1080,framerate=30/1 ! jpegdec ! videoconvert ! tee name=t
+            t. ! queue ! videoscale ! video/x-raw,width=480,height=270 !
+                textoverlay name=crosshair_pre1 text="+" halignment=center valignment=center
+                    font-desc="Sans,48" color=0xFFFFFF draw-outline=true outline-color=0x000000 !
+                clockoverlay name=preview_clock halignment=right valignment=bottom shaded-background=true
+                    font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
+                videoconvert ! {self.video_sink_element}
+            t. ! queue !
+                clockoverlay name=photo_clock halignment=right valignment=bottom shaded-background=true
+                    font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
+                videoconvert ! jpegenc ! appsink name=photo_sink max-buffers=1 drop=true
+        """
+        pipeline_desc = " ".join(pipeline_desc_2.split())
         logger.debug("CameraTab preview pipeline:\n%s", pipeline_desc)
         return Gst.parse_launch(pipeline_desc)
 
@@ -107,7 +121,7 @@ class CameraTab(Gtk.Box):
          - Branch 3: Overlays for photo capture.
         """
         encoder = self.choose_encoder()
-        pipeline_desc = f"""
+        rec_pipeline_desc_1 = f"""
             libcamerasrc name=cam ! videoconvert ! video/x-raw,format=NV12,width=1920,height=1080 ! tee name=t
             t. ! queue !
                 textoverlay name=crosshair_pre2 text="+" halignment=center valignment=center
@@ -131,7 +145,33 @@ class CameraTab(Gtk.Box):
                     font-desc="Sans,20" time-mode=elapsed-running-time !
                 videoconvert ! jpegenc ! appsink name=photo_sink max-buffers=1 drop=true
         """
-        pipeline_desc = " ".join(pipeline_desc.split())
+
+        rec_pipeline_desc_2 = f"""
+            v4l2src device=/dev/video0 ! image/jpeg,width=1920,height=1080,framerate=30/1 ! jpegdec ! videoconvert ! tee name=t
+            t. ! queue ! videoscale ! video/x-raw,width=480,height=270 !
+                textoverlay name=crosshair_pre2 text="+" halignment=center valignment=center
+                    font-desc="Sans,48" color=0xFFFFFF draw-outline=true outline-color=0x000000 !
+                clockoverlay name=video_preview_clock halignment=right valignment=bottom shaded-background=true
+                    font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
+                timeoverlay name=video_preview_elapsed_time halignment=left valignment=bottom shaded-background=true
+                    font-desc="Sans,20" time-mode=elapsed-running-time !
+                videoconvert ! {self.video_sink_element}
+            t. ! queue !
+                clockoverlay name=video_clock halignment=right valignment=bottom shaded-background=true
+                    font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
+                timeoverlay name=video_elapsed_time halignment=left valignment=bottom shaded-background=true
+                    font-desc="Sans,20" time-mode=elapsed-running-time !
+                videoconvert ! {encoder} speed-preset=ultrafast tune=zerolatency !
+                splitmuxsink name=splitmux
+            t. ! queue !
+                clockoverlay name=video_photo_clock halignment=right valignment=bottom shaded-background=true
+                    font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
+                timeoverlay name=video_photo_elapsed_time halignment=left valignment=bottom shaded-background=true
+                    font-desc="Sans,20" time-mode=elapsed-running-time !
+                videoconvert ! jpegenc ! appsink name=photo_sink max-buffers=1 drop=true
+        """
+
+        pipeline_desc = " ".join(rec_pipeline_desc_2.split())
         logger.debug("CameraTab record pipeline:\n%s", pipeline_desc)
         pipeline = Gst.parse_launch(pipeline_desc)
         splitmux = pipeline.get_by_name("splitmux")
@@ -292,7 +332,7 @@ class PhotosTab(Gtk.Box):
             files = sorted(os.listdir(pictures_dir))
             for f in files:
                 if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
-                    self.file_list_store.append([f])
+                    self.file_list_store.insert(0, [f])
                     
     def on_selection_changed(self, selection):
         model, treeiter = selection.get_selected()
@@ -402,7 +442,7 @@ class VideosTab(Gtk.Box):
             files = sorted(os.listdir(videos_dir))
             for f in files:
                 if f.lower().endswith(('.mp4', '.mkv', '.avi')):
-                    self.file_list_store.append([f])
+                    self.file_list_store.insert(0, [f])
                     
     def on_selection_changed(self, selection):
         model, treeiter = selection.get_selected()
@@ -531,7 +571,7 @@ class VideosTab(Gtk.Box):
 class MainWindow(Gtk.Window):
     def __init__(self):
         super().__init__(title="Timestamp Camera")
-        self.set_default_size(800, 480)
+        self.set_default_size(480, 320)
         self.connect("delete-event", Gtk.main_quit)
         notebook = Gtk.Notebook()
         self.add(notebook)
