@@ -3,6 +3,7 @@ import gi, os, datetime, logging
 gi.require_version("Gst", "1.0")
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gst, Gtk, GLib, GdkPixbuf
+from gi.repository import Gdk  # Needed for RGBA color
 
 # Configure verbose logging.
 logging.basicConfig(
@@ -37,17 +38,39 @@ class CameraTab(Gtk.Box):
         control_box.pack_start(button_box, True, True, 0)
 
         # Create buttons (using symbols – if emoji not available, use text labels).
-        self.photo_button  = Gtk.Button(label="📷")
+        self.exit_button = Gtk.Button(label="❌")
+        self.photo_button = Gtk.Button(label="📷")
         self.record_button = Gtk.Button(label="⏺")
+        self.exit_button.set_hexpand(True)
+        self.exit_button.set_vexpand(True)
         self.photo_button.set_hexpand(True)
         self.photo_button.set_vexpand(True)
         self.record_button.set_hexpand(True)
         self.record_button.set_vexpand(True)
+        button_box.pack_start(self.exit_button, True, True, 0)
         button_box.pack_start(self.photo_button, True, True, 0)
         button_box.pack_start(self.record_button, True, True, 0)
 
+        self.exit_button.connect("clicked", self.main_quit)
         self.photo_button.connect("clicked", self.on_photo_clicked)
         self.record_button.connect("clicked", self.on_record_clicked)
+
+        # Connect pressed and released events for visual feedback.
+        self.photo_button.connect("pressed", self.on_photo_pressed)
+        self.photo_button.connect("released", self.on_photo_released)
+
+        # Add CSS style for click feedback.
+        css_provider = Gtk.CssProvider()
+        css_data = b'''
+            .click-feedback {
+                background-image: none;
+                background-color: orange;
+            }
+        '''
+        css_provider.load_from_data(css_data)
+        screen = Gdk.Screen.get_default()
+        Gtk.StyleContext.add_provider_for_screen(screen, css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
 
         self.pipeline = None
         self.mode = None  # "preview" or "record"
@@ -290,6 +313,15 @@ class CameraTab(Gtk.Box):
                 logger.error("CameraTab: Failed mapping buffer for reading.")
         else:
             logger.error("CameraTab: No sample pulled for photo; possibly no new frames available.")
+
+    def on_photo_pressed(self, widget):
+        widget.get_style_context().add_class("click-feedback")
+
+    def on_photo_released(self, widget):
+        GLib.timeout_add(150, lambda: (widget.get_style_context().remove_class("click-feedback"), False))
+    
+    def main_quit(self, widget):
+        Gtk.main_quit()
 
 ### PHOTOS TAB ###
 class PhotosTab(Gtk.Box):
