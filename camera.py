@@ -159,7 +159,7 @@ class CameraTab(Gtk.Box):
                     font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
                 timeoverlay name=video_elapsed_time halignment=left valignment=bottom shaded-background=true
                     font-desc="Sans,20" time-mode=elapsed-running-time !
-                videoconvert ! {encoder} speed-preset=ultrafast tune=zerolatency !
+                videoconvert ! {encoder} speed-preset=ultrafast tune=zerolatency bitrate=8000  key-int-max=30!
                 splitmuxsink name=splitmux
             t. ! queue !
                 clockoverlay name=video_photo_clock halignment=right valignment=bottom shaded-background=true
@@ -184,7 +184,7 @@ class CameraTab(Gtk.Box):
                     font-desc="Sans,20" time-format="%Y-%m-%d %H:%M:%S" !
                 timeoverlay name=video_elapsed_time halignment=left valignment=bottom shaded-background=true
                     font-desc="Sans,20" time-mode=elapsed-running-time !
-                videoconvert ! {encoder} speed-preset=ultrafast tune=zerolatency !
+                videoconvert ! {encoder} speed-preset=ultrafast tune=zerolatency bitrate=10000 !
                 splitmuxsink name=splitmux
             t. ! queue !
                 clockoverlay name=video_photo_clock halignment=right valignment=bottom shaded-background=true
